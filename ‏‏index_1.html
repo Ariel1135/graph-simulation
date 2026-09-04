@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>סימולציית תנועה - העתק זמן</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none;
+        }
+        body {
+            background-color: #f4f6f9;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            margin-bottom: 10px;
+            color: #333;
+        }
+        .container {
+            display: flex;
+            flex-direction: row;
+            gap: 20px;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            align-items: center;
+        }
+        canvas {
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            background-color: #ffffff;
+        }
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        button {
+            padding: 10px 18px;
+            font-size: 15px;
+            font-weight: bold;
+            color: white;
+            background-color: #007bff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button.reset {
+            background-color: #6c757d;
+        }
+        button.reset:hover {
+            background-color: #5a6268;
+        }
+        button.toggle {
+            background-color: #28a745;
+        }
+        button.toggle:hover {
+            background-color: #218838;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>סימולציית תנועה: העתק - זמן</h1>
+
+    <div class="container">
+        <!-- מסלול הכדור (מימין) -->
+        <div>
+            <canvas id="ballCanvas" width="100" height="400"></canvas>
+        </div>
+        <!-- גרף העתק-זמן (משמאל) -->
+        <div>
+            <canvas id="graphCanvas" width="600" height="400"></canvas>
+        </div>
+    </div>
+
+    <!-- כפתורי שליטה -->
+    <div class="controls">
+        <button onclick="setPreset('linear')">מהירות קבועה</button>
+        <button onclick="setPreset('parabola')">פרבולה</button>
+        <button onclick="setPreset('sine')">סינוס</button>
+        <button onclick="setCustomFunction()">פונקציה אישית...</button>
+        <button class="toggle" onclick="toggleGraphMode()" id="modeBtn">מצב גרף: מתקדם ימינה</button>
+        <button class="reset" onclick="resetManual()">איפוס / ידני</button>
+    </div>
+
+    <script>
+        const graphCanvas = document.getElementById('graphCanvas');
+        const gCtx = graphCanvas.getContext('2d');
+        const ballCanvas = document.getElementById('ballCanvas');
+        const bCtx = ballCanvas.getContext('2d');
+
+        // הגדרות מערכת קואורדינטות
+        const Y_MIN = -10, Y_MAX = 10;
+        const TIME_WINDOW = 6; // חלון זמן מוצג בשניות
+
+        let isDragging = false;
+        let mode = 'manual'; // 'manual' או 'auto'
+        let graphMode = 'leftToRight'; // 'leftToRight' או 'rightPinned'
+        let targetY = 0;
+        let currentY = 0;
+        let autoFunc = null;
+        let autoStartTime = 0;
+        let startTime = performance.now() / 1000;
+        let lastCustomInput = "t^2 - 10";
+
+        let history = []; // נקודות הגרף (t, y)
+
+        const gridPadding = 40;
+        const graphWidth = graphCanvas.width - gridPadding;
+        const graphHeight = graphCanvas.height - gridPadding;
+
+        // אירועי עכבר ומגע לכדור
+        function handlePointerDown(e) {
+            isDragging = true;
+            mode = 'manual';
+            updateBallFromPointer(e);
+        }
+
+        function handlePointerMove(e) {
+            if (isDragging) {
+                updateBallFromPointer(e);
+            }
+        }
+
+        function handlePointerUp() {
+            isDragging = false;
+        }
+
+        function updateBallFromPointer(e) {
+            const rect = ballCanvas.getBoundingClientRect();
+            const clientY = e.clientY || (e.touches && e.touches[0].clientY);
+            const py = clientY - rect.top;
+            
+            let yVal = Y_MAX - (py / ballCanvas.height) * (Y_MAX - Y_MIN);
+            targetY = Math.max(Y_MIN, Math.min(Y_MAX, yVal));
+        }
+
+        ballCanvas.addEventListener('mousedown', handlePointerDown);
+        window.addEventListener('mousemove', handlePointerMove);
+        window.addEventListener('mouseup', handlePointerUp);
+
+        ballCanvas.addEventListener('touchstart', handlePointerDown);
+        window.addEventListener('touchmove', handlePointerMove);
+        window.addEventListener('touchend', handlePointerUp);
+
+        // החלפת מצב הגרף בין התקדמות משמאל לימין לבין נקודה מחוברת מימין
+        function toggleGraphMode() {
+            const btn = document.getElementById('modeBtn');
+            if (graphMode === 'leftToRight') {
+                graphMode = 'rightPinned';
+                btn.innerText = "מצב גרף: נקודה ימנית (זז)";
+            } else {
+                graphMode = 'leftToRight';
+                btn.innerText = "מצב גרף: מתקדם ימינה";
+            }
+        }
+
+        // הפעלת פונקציה מוכנה מראש
+        function setPreset(type) {
+            let func;
+            if (type === 'linear') {
+                func = (t) => -10 + 3 * t;
+            } else if (type === 'parabola') {
+                func = (t) => -10 + Math.pow(t, 2);
+            } else if (type === 'sine') {
+                func = (t) => -10 + 10 * (Math.sin(2 * Math.PI * 0.2 * t - Math.PI / 2) + 1);
+            }
+            applyFunction(func);
+        }
+
+        // הגדרת פונקציה אישית
+        function setCustomFunction() {
+            let input = prompt("הכנס פונקציה של t", lastCustomInput);
+            if (input) {
+                try {
+                    let expr = input.replace(/sin/g, "Math.sin")
+                                    .replace(/cos/g, "Math.cos")
+                                    .replace(/pi/gi, "Math.PI")
+                                    .replace(/\^/g, "**");
+                    let func = new Function("t", `return ${expr};`);
+                    func(0);
+                    
+                    lastCustomInput = input;
+                    applyFunction(func);
+                } catch (e) {
+                    alert("הפונקציה אינה תקינה. ודא שימוש בתחביר מתמטי תקין.");
+                }
+            }
+        }
+
+        function applyFunction(func) {
+            autoFunc = func;
+            mode = 'auto';
+            const now = performance.now() / 1000;
+            autoStartTime = now;
+
+            let startY = 0;
+            try {
+                startY = autoFunc(0);
+            } catch (e) {
+                startY = -10;
+            }
+            startY = Math.max(Y_MIN, Math.min(Y_MAX, startY));
+            
+            targetY = startY;
+            currentY = startY;
+        }
+
+        function resetManual() {
+            mode = 'manual';
+            targetY = 0;
+            currentY = 0;
+            history = [];
+            startTime = performance.now() / 1000;
+        }
+
+        function animate() {
+            const now = performance.now() / 1000;
+            const t = now - startTime;
+
+            if (mode === 'auto') {
+                const tRel = now - autoStartTime;
+                try {
+                    targetY = Math.max(Y_MIN, Math.min(Y_MAX, autoFunc(tRel)));
+                } catch (e) {
+                    targetY = 0;
+                }
+            }
+
+            currentY += (targetY - currentY) * 0.25;
+            history.push({ t: t, y: currentY });
+
+            gCtx.clearRect(0, 0, graphCanvas.width, graphCanvas.height);
+            bCtx.clearRect(0, 0, ballCanvas.width, ballCanvas.height);
+
+            drawGraph(t);
+            drawBall();
+
+            requestAnimationFrame(animate);
+        }
+
+        function drawGraph(currentTime) {
+            let tStart, tEnd;
+
+            if (graphMode === 'rightPinned') {
+                // מצב נקודה ימנית רציפה
+                tEnd = currentTime;
+                tStart = currentTime - TIME_WINDOW;
+            } else {
+                // מצב רגיל (מתקדם משמאל לימין)
+                if (currentTime > TIME_WINDOW - 1) {
+                    tStart = currentTime - (TIME_WINDOW - 1);
+                } else {
+                    tStart = 0;
+                }
+                tEnd = tStart + TIME_WINDOW;
+            }
+
+            const toX = (t) => gridPadding + ((t - tStart) / TIME_WINDOW) * graphWidth;
+            const toY = (y) => ((Y_MAX - y) / (Y_MAX - Y_MIN)) * graphHeight;
+
+            // ציור רשת ושנתות Y
+            gCtx.strokeStyle = "#e0e0e0";
+            gCtx.lineWidth = 1;
+
+            gCtx.fillStyle = "#555";
+            gCtx.font = "12px sans-serif";
+            gCtx.textAlign = "right";
+
+            for (let y = Y_MIN; y <= Y_MAX; y += 2) {
+                let py = toY(y);
+                gCtx.beginPath();
+                gCtx.moveTo(gridPadding, py);
+                gCtx.lineTo(graphCanvas.width, py);
+                gCtx.stroke();
+                gCtx.fillText(y, gridPadding - 5, py + 4);
+            }
+
+            // שנתות ציר X
+            gCtx.textAlign = "center";
+            let firstSecond = Math.floor(tStart);
+            let lastSecond = Math.ceil(tEnd);
+
+            for (let sec = firstSecond; sec <= lastSecond; sec++) {
+                if (sec >= 0) {
+                    let px = toX(sec);
+                    if (px >= gridPadding && px <= graphCanvas.width) {
+                        gCtx.beginPath();
+                        gCtx.moveTo(px, 0);
+                        gCtx.lineTo(px, graphHeight);
+                        gCtx.stroke();
+                        gCtx.fillText(sec + "s", px, graphHeight + 20);
+                    }
+                }
+            }
+
+            // קו y=0
+            let yZeroPx = toY(0);
+            gCtx.strokeStyle = "#444";
+            gCtx.setLineDash([5, 5]);
+            gCtx.beginPath();
+            gCtx.moveTo(gridPadding, yZeroPx);
+            gCtx.lineTo(graphCanvas.width, yZeroPx);
+            gCtx.stroke();
+            gCtx.setLineDash([]);
+
+            // קו הגרף
+            gCtx.strokeStyle = "#007bff";
+            gCtx.lineWidth = 2.5;
+            gCtx.beginPath();
+
+            let started = false;
+            for (let pt of history) {
+                if (pt.t >= tStart) {
+                    let px = toX(pt.t);
+                    let py = toY(pt.y);
+                    if (!started) {
+                        gCtx.moveTo(px, py);
+                        started = true;
+                    } else {
+                        gCtx.lineTo(px, py);
+                    }
+                }
+            }
+            gCtx.stroke();
+
+            // הנקודה השחורה המובילה
+            let headX = toX(currentTime);
+            let headY = toY(currentY);
+            gCtx.fillStyle = "#000";
+            gCtx.beginPath();
+            gCtx.arc(headX, headY, 5, 0, Math.PI * 2);
+            gCtx.fill();
+        }
+
+        function drawBall() {
+            const w = ballCanvas.width;
+            const h = ballCanvas.height;
+
+            bCtx.strokeStyle = "#ddd";
+            bCtx.lineWidth = 4;
+            bCtx.beginPath();
+            bCtx.moveTo(w / 2, 0);
+            bCtx.lineTo(w / 2, h);
+            bCtx.stroke();
+
+            let yZeroPx = ((Y_MAX - 0) / (Y_MAX - Y_MIN)) * h;
+            bCtx.strokeStyle = "#666";
+            bCtx.setLineDash([4, 4]);
+            bCtx.beginPath();
+            bCtx.moveTo(0, yZeroPx);
+            bCtx.lineTo(w, yZeroPx);
+            bCtx.stroke();
+            bCtx.setLineDash([]);
+
+            let ballY = ((Y_MAX - currentY) / (Y_MAX - Y_MIN)) * h;
+            bCtx.fillStyle = "#dc3545";
+            bCtx.beginPath();
+            bCtx.arc(w / 2, ballY, 18, 0, Math.PI * 2);
+            bCtx.fill();
+            bCtx.strokeStyle = "#b02a37";
+            bCtx.lineWidth = 2;
+            bCtx.stroke();
+        }
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
